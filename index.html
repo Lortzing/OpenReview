@@ -172,7 +172,6 @@ h2{
         <span>科研影响力与颠覆性分析</span>
       </a>
       <nav class="navlinks" aria-label="主导航">
-        <a href="#summary">摘要</a>
         <a href="#variables">变量</a>
         <a href="#findings">主要发现</a>
         <a href="#results">证据章节</a>
@@ -204,21 +203,11 @@ h2{
       </div>
     </section>
 
-    <section id="summary" class="section">
-      <div class="narrow">
-        <div class="section-head">
-          <div><div class="kicker">Overview</div><h2>阅读顺序</h2></div>
-          <p>页面按证据链组织，不按原始图片顺序罗列。每条结论均链接到对应图表，读者可从结论进入证据，也可从图表索引回溯结论。</p>
-        </div>
-        <div class="finding-list" id="findingList"></div>
-      </div>
-    </section>
-
     <section id="variables" class="section">
       <div class="shell">
         <div class="section-head">
           <div><div class="kicker">Variables</div><h2>变量与解释框架</h2></div>
-          <p>先区分响应变量与解释变量，避免把高引用、高颠覆性和评审过程变量混为同一层级。</p>
+          <p>区分响应变量与解释变量，避免把高引用、高颠覆性和评审过程变量混为同一层级。</p>
         </div>
         <div class="variables">
           <div class="var-card">
@@ -245,7 +234,6 @@ h2{
       <div class="narrow">
         <div class="section-head">
           <div><div class="kicker">Main findings</div><h2>主要发现</h2></div>
-          <p>每条发现由“结论—证据图表—解释边界”组成，重点呈现可被图表支持的关系。</p>
         </div>
         <div class="finding-list" id="mainFindings"></div>
       </div>
@@ -287,7 +275,7 @@ h2{
   </main>
 
   <footer class="footer">
-    <div class="shell">数据来源：实验性分析及可视化；图表资源为本地静态文件。</div>
+    <div class="shell">数据来源：实验性分析及可视化</div>
   </footer>
 
   <div id="lightbox" class="lightbox" aria-hidden="true">
@@ -318,20 +306,6 @@ function figButton(id) {
   const f = byId.get(id);
   if (!f) return '';
   return `<button class="figlink" data-open="${id}" title="${f.title}">${fmtFig(id)}</button>`;
-}
-
-function renderReadingOrder() {
-  const root = document.getElementById('findingList');
-  root.innerHTML = CHAPTERS.map(c => `
-    <div class="finding-row">
-      <div class="finding-id">${c.label}</div>
-      <div class="finding-main">
-        <h3>${c.name}</h3>
-        <p>${c.short}</p>
-      </div>
-      <div class="evidence-links">${c.evidence.slice(0,6).map(figButton).join('')}</div>
-    </div>
-  `).join('');
 }
 
 function renderMainFindings() {
@@ -433,7 +407,6 @@ function closeLightbox() {
   box.setAttribute('aria-hidden', 'true');
 }
 
-renderReadingOrder();
 renderMainFindings();
 renderChapters();
 renderChips();
