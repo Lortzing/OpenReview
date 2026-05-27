@@ -120,3 +120,13 @@ set_cn_font()
 尽可能不要在文档和代码中使用绝对路径
 
 每次做出较为复杂的改动时, 调用子智能体进行验收, 问问他你本来要做的任务是否真的完成了, 没有的话就再调用子智能体继续改, 然后再验收, 反复执行直到真的完成所有的任务
+
+---
+
+## Project Notes
+
+This project is a static research presentation page.
+
+* `index.html` contains the layout, styling, data arrays, and client-side rendering logic.
+* `assets/figures/` contains the local figure assets referenced by relative paths.
+* Keep the page usable by opening `index.html` directly; use a temporary local HTTP server only for browser validation when needed.
