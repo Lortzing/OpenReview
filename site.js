@@ -134,3 +134,21 @@ const sections=CHAPTERS.map(chapter=>{
   return `<section id="${chapter[0]}" class="chapter"><div class="chapter-head"><h2>${chapter[1]}</h2><p>${chapter[2]}</p></div>${renderChapterDetail(chapter[0])}${modelBlock}${gallery}</section>`;
 }).join('');
 document.body.innerHTML=`<header class="header"><div class="shell nav"><a class="brand" href="index.html">开放同行评议与高水平论文</a><nav class="dataset-nav">${nav}</nav></div></header><main><section class="hero"><div class="shell"><div class="eyebrow">${meta.label}数据集</div><h1>${meta.label}数据集</h1><p>${meta.intro}</p>${renderProfile()}</div></section><div class="shell layout"><aside class="toc">${toc}</aside><div>${sections}</div></div></main><footer class="footer"><div class="shell">基于《中信所-报告v1》的章节脉络组织，每个数据集页面展示 83 张图及对应说明。</div></footer>`;
+const tocLinks=[...document.querySelectorAll('.toc a')];
+const chapterSections=[...document.querySelectorAll('.chapter')];
+function setCurrentToc(id){
+  tocLinks.forEach(link=>link.classList.toggle('current', link.getAttribute('href')===`#${id}`));
+}
+function updateCurrentToc(){
+  const bottomReached=window.innerHeight+window.scrollY>=document.documentElement.scrollHeight-2;
+  let current=bottomReached?chapterSections[chapterSections.length-1]:chapterSections[0];
+  if(!bottomReached){
+    for(const section of chapterSections){
+      if(section.getBoundingClientRect().top<=window.innerHeight*0.35) current=section;
+    }
+  }
+  if(current) setCurrentToc(current.id);
+}
+window.addEventListener('scroll',updateCurrentToc,{passive:true});
+window.addEventListener('resize',updateCurrentToc);
+updateCurrentToc();

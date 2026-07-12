@@ -130,6 +130,7 @@ This project is a static research presentation page.
 * `index.html` is the total-dataset static entry point and loads the shared CSS and JavaScript files.
 * `ai.html`, `biomedicine.html`, and `physics.html` are dataset-specific static entry points that reuse the same scripts with different `body[data-dataset]` values.
 * `site.js` renders dataset intros, report-derived chapter guide cards, local dataset profile stats, all 83 figures, and dataset-specific citation Top10 model tables.
+* The left-side table of contents tracks the currently visible chapter with the `.current` class.
 * Dataset profile stats use the same four labels on all pages: `记录数`, `唯一论文数`, `变量字段数`, and `图表数量`. The three profile cards use `数据来源`, `质量概况`, and `时间结构`.
 * `visual-descriptions.js` replaces generic figure captions with dataset-specific visual interpretations.
 * `visual-overrides.css` contains the presentation refinements for captions, dataset profile cards, chapter guide cards, and model result tables.
