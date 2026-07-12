@@ -1,0 +1,364 @@
+--- scripts/prereview_crawler.py
++++ scripts/prereview_crawler.py
+@@ -32,6 +32,11 @@
+ import requests
+ from bs4 import BeautifulSoup
+ 
++try:
++    import fitz  # PyMuPDF, used for the small number of PDF-only author responses
++except ImportError:  # pragma: no cover - reported in collection statistics
++    fitz = None
++
+ COLUMNS = ["DOI", "PaperTitle", "Authors", "Source", "Venue", "Year", "PeerReview", "Field"]
+ ZENODO_API = "https://zenodo.org/api/records"
+ COMMUNITY = "prereview-reviews"
+@@ -47,6 +52,13 @@
+     "this zenodo record is a permanently preserved version of",
+     "you can view the complete prereview at",
+ )
++KNOWN_HTML_TAGS = frozenset({
++    "a", "abbr", "article", "aside", "b", "blockquote", "br", "code", "dd", "div",
++    "dl", "dt", "em", "figcaption", "figure", "h1", "h2", "h3", "h4", "h5",
++    "h6", "hr", "i", "img", "li", "ol", "p", "pre", "q", "s", "section",
++    "small", "span", "strong", "sub", "sup", "table", "tbody", "td", "th",
++    "thead", "tr", "u", "ul",
++})
+ FORBIDDEN_VENUE_FRAGMENTS = (
+     " elsevier", "springer", "wiley", "taylor & francis", "sage publishing",
+     "science and business media", "publishing group", "publications inc",
+@@ -81,6 +93,19 @@
+ 
+ 
+ @dataclass
++class AuthorResponse:
++    response_id: str
++    record_id: str
++    target_review_id: str
++    family_key: str
++    content: str
++    response_date: str
++    record_url: str
++    creators: list[str] = field(default_factory=list)
++    body_source: str = ""
++
++
++@dataclass
+ class TargetBucket:
+     target: Target
+     reviews: list[Review] = field(default_factory=list)
+@@ -95,11 +120,27 @@
+ def clean_text(value: Any, separator: str = "\n") -> str:
+     if value is None:
+         return ""
+-    soup = BeautifulSoup(str(value), "html.parser")
++    raw = str(value)
++    # Zenodo contains both ordinary HTML and historically double-escaped HTML.
++    # Decode before parsing so tags do not reappear after BeautifulSoup has run.
++    for _ in range(3):
++        decoded = html.unescape(raw)
++        if decoded == raw:
++            break
++        raw = decoded
++    # Preserve Markdown-style autolinks as plain URLs instead of letting an HTML
++    # parser interpret strings such as <https://example.org/path> as tag names.
++    raw = re.sub(
++        r"<\s*(https?://[^<>]+?)\s*>",
++        lambda match: re.sub(r"\s+", "", match.group(1)),
++        raw,
++        flags=re.I | re.S,
++    )
++    soup = BeautifulSoup(raw, "html.parser")
+     for tag in soup(["script", "style", "noscript"]):
+         tag.decompose()
+-    raw = html.unescape(soup.get_text(separator))
+-    lines = [re.sub(r"[\t\r\f\v ]+", " ", line).strip() for line in raw.splitlines()]
++    raw_text = soup.get_text(separator)
++    lines = [re.sub(r"[\t\r\f\v ]+", " ", line).strip() for line in raw_text.splitlines()]
+     out: list[str] = []
+     blank = False
+     for line in lines:
+@@ -390,7 +431,23 @@
+                 time.sleep(1 + attempt)
+         raise RuntimeError(f"GET failed: {url}: {error}")
+ 
+-    def iter_zenodo_records(self, max_pages: int, page_size: int = 100):
++    def get_bytes(self, url: str, retries: int = 4) -> bytes:
++        error: Exception | None = None
++        for attempt in range(retries):
++            try:
++                response = self.session.get(url, timeout=90)
++                self.request_counts[urlparse(response.url).netloc] += 1
++                if response.status_code == 429:
++                    time.sleep(min(30, 2 ** attempt))
++                    continue
++                response.raise_for_status()
++                return response.content
++            except Exception as exc:
++                error = exc
++                time.sleep(1 + attempt)
++        raise RuntimeError(f"GET failed: {url}: {error}")
++
++    def iter_zenodo_records(self, max_pages: int, page_size: int = 25):
+         for page in range(1, max_pages + 1):
+             payload = self.get_json(ZENODO_API, {
+                 "communities": COMMUNITY,
+@@ -426,12 +483,60 @@
+                         continue
+         return ""
+ 
+-    def scan(self, max_pages: int) -> tuple[OrderedDict[str, Family], dict[str, Any]]:
++    def response_body(self, record: dict[str, Any]) -> tuple[str, str]:
++        # Legacy PREreview author responses may store only a one-sentence landing
++        # description and keep the full response in a PDF attachment.
++        if fitz is not None:
++            for file_info in record.get("files") or []:
++                if not isinstance(file_info, dict):
++                    continue
++                if not str(file_info.get("key") or "").lower().endswith(".pdf"):
++                    continue
++                url = (file_info.get("links") or {}).get("self")
++                if not url:
++                    continue
++                try:
++                    document = fitz.open(stream=self.get_bytes(url), filetype="pdf")
++                    body = clean_text("\n\n".join(page.get_text("text") for page in document))
++                    document.close()
++                    if body:
++                        return body, "pdf_attachment"
++                except Exception as exc:
++                    logging.warning("Unable to extract response PDF for record %s: %s", record.get("id"), exc)
++        description = clean_review_html((record.get("metadata") or {}).get("description"))
++        return description, "description" if description else ""
++
++    @staticmethod
++    def response_relations(record: dict[str, Any]) -> tuple[str, str]:
++        target_review_id = ""
++        target_paper_doi = ""
++        for item in (record.get("metadata") or {}).get("related_identifiers") or []:
++            if not isinstance(item, dict):
++                continue
++            if str(item.get("relation") or "").lower() not in {"cites", "isresponseTo".lower(), "references"}:
++                continue
++            candidate = normalize_doi(item.get("identifier") or item.get("id") or item.get("value"))
++            if not candidate:
++                continue
++            if ZENODO_DOI_RE.fullmatch(candidate):
++                target_review_id = target_review_id or candidate
++            else:
++                target_paper_doi = target_paper_doi or candidate
++        return target_review_id, target_paper_doi
++
++    def scan(self, max_pages: int) -> tuple[
++        OrderedDict[str, Family],
++        dict[str, Any],
++        dict[str, list[AuthorResponse]],
++        set[str],
++    ]:
+         families: OrderedDict[str, Family] = OrderedDict()
+         seen_records: set[str] = set()
+         stats: Counter[str] = Counter()
+         review_types: Counter[str] = Counter()
+-        possible_responses: list[dict[str, str]] = []
++        possible_responses: list[dict[str, Any]] = []
++        responses_by_review: dict[str, list[AuthorResponse]] = {}
++        response_family_keys: set[str] = set()
+ 
+         for record in self.iter_zenodo_records(max_pages):
+             record_id = str(record.get("id") or record.get("recid") or "")
+@@ -442,9 +547,41 @@
+             stats["records_seen"] += 1
+             metadata = record.get("metadata") or {}
+             raw_title = clean_text(metadata.get("title"), " ")
+-            if re.search(r"\b(author response|response to|rebuttal|reply to)\b", raw_title, re.I):
+-                possible_responses.append({"record_id": record_id, "title": raw_title})
+-                stats["possible_response_records_skipped"] += 1
++            if re.match(
++                r"^(?:(?:author\s+)?response\s+to\s+.+?\breview\b|rebuttal\b|reply\s+to\b)",
++                raw_title,
++                re.I,
++            ):
++                target_review_id, target_paper_doi = self.response_relations(record)
++                body, body_source = self.response_body(record)
++                response_detail = {
++                    "record_id": record_id,
++                    "title": raw_title,
++                    "response_doi": review_doi(record),
++                    "target_review_id": target_review_id,
++                    "target_paper_doi": target_paper_doi,
++                    "body_source": body_source,
++                    "body_length": len(body),
++                }
++                possible_responses.append(response_detail)
++                if target_review_id and target_paper_doi and body:
++                    family_key, _ = family_and_version(target_paper_doi, "doi")
++                    response = AuthorResponse(
++                        response_id=review_doi(record),
++                        record_id=record_id,
++                        target_review_id=target_review_id,
++                        family_key=family_key,
++                        content=body,
++                        response_date=str(metadata.get("publication_date") or record.get("created") or "")[:10],
++                        record_url=(record.get("links") or {}).get("self_html") or f"https://zenodo.org/records/{record_id}",
++                        creators=creators_from_record(record),
++                        body_source=body_source,
++                    )
++                    responses_by_review.setdefault(target_review_id, []).append(response)
++                    response_family_keys.add(family_key)
++                    stats["author_responses_accepted"] += 1
++                else:
++                    stats["author_responses_unresolved"] += 1
+                 continue
+             target, reason = explicit_target(record)
+             if target is None:
+@@ -485,9 +622,10 @@
+         report["strict_families"] = len(families)
+         report["strict_target_versions"] = sum(len(family.targets) for family in families.values())
+         report["review_types"] = dict(review_types)
+-        report["possible_response_records"] = possible_responses[:50]
+-        report["possible_response_record_count"] = len(possible_responses)
+-        return families, report
++        report["author_response_records"] = possible_responses[:50]
++        report["author_response_record_count"] = len(possible_responses)
++        report["author_response_family_count"] = len(response_family_keys)
++        return families, report, responses_by_review, response_family_keys
+ 
+     def crossref_metadata(self, doi_value: str) -> dict[str, Any]:
+         payload = self.get_json("https://api.crossref.org/works/" + quote(doi_value, safe=""), retries=3)
+@@ -574,7 +712,11 @@
+     def family_hash(self, key: str) -> str:
+         return hashlib.sha256(f"{self.seed}\0{key}".encode()).hexdigest()
+ 
+-    def build_family(self, family: Family) -> tuple[dict[str, Any] | None, dict[str, Any]]:
++    def build_family(
++        self,
++        family: Family,
++        responses_by_review: dict[str, list[AuthorResponse]],
++    ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+         buckets = list(family.targets.values())
+         buckets.sort(key=lambda bucket: (
+             bucket.target.version is None,
+@@ -626,7 +768,28 @@
+         for round_index, bucket in enumerate(buckets, start=1):
+             reviews = sorted(bucket.reviews, key=lambda review: (review.review_date, review.review_id))
+             comments = [{"Reviewer_ID": review.review_id, "Comment": review.comment} for review in reviews]
+-            rounds.append({"Round": round_index, "Comments": comments, "Response": []})
++            round_responses: list[dict[str, str]] = []
++            audit_responses: list[dict[str, Any]] = []
++            seen_response_ids: set[str] = set()
++            for review in reviews:
++                for response in responses_by_review.get(review.review_id, []):
++                    if response.family_key != family.key or response.response_id in seen_response_ids:
++                        continue
++                    seen_response_ids.add(response.response_id)
++                    round_responses.append({
++                        "To_Reviewer_ID": review.review_id,
++                        "Response": response.content,
++                    })
++                    audit_responses.append({
++                        "response_id": response.response_id,
++                        "response_record_id": response.record_id,
++                        "response_url": response.record_url,
++                        "response_date": response.response_date,
++                        "authors": response.creators,
++                        "body_source": response.body_source,
++                        "to_review_id": review.review_id,
++                    })
++            rounds.append({"Round": round_index, "Comments": comments, "Response": round_responses})
+             audit_rounds.append({
+                 "round": round_index,
+                 "target_identifier": bucket.target.value,
+@@ -643,6 +806,7 @@
+                     }
+                     for review in reviews
+                 ],
++                "responses": audit_responses,
+             })
+ 
+         latest_doi = latest_bucket.target.doi
+@@ -668,14 +832,29 @@
+         return paper, audit
+ 
+     def collect(self, limit: int, max_pages: int) -> tuple[list[dict[str, Any]], dict[str, Any], list[dict[str, Any]]]:
+-        families, scan_stats = self.scan(max_pages)
+-        ordered = sorted(families.values(), key=lambda family: self.family_hash(family.key))
++        families, scan_stats, responses_by_review, response_family_keys = self.scan(max_pages)
++        family_values = list(families.values())
++        response_linked = sorted(
++            (family for family in family_values if family.key in response_family_keys),
++            key=lambda family: self.family_hash(family.key),
++        )
++        multi_version = sorted(
++            (family for family in family_values if len(family.targets) > 1 and family.key not in response_family_keys),
++            key=lambda family: self.family_hash(family.key),
++        )
++        single_version = sorted(
++            (family for family in family_values if len(family.targets) == 1 and family.key not in response_family_keys),
++            key=lambda family: self.family_hash(family.key),
++        )
++        # Include rare high-value structures first (linked author responses and
++        # multi-version papers), then fill the remainder deterministically.
++        ordered = response_linked + multi_version + single_version
+         papers: list[dict[str, Any]] = []
+         audit: list[dict[str, Any]] = []
+         rejection_counts: Counter[str] = Counter()
+         rejection_examples: list[dict[str, Any]] = []
+         for family in ordered:
+-            paper, detail = self.build_family(family)
++            paper, detail = self.build_family(family, responses_by_review)
+             if paper is None:
+                 rejection_counts[detail.get("reason", "unknown")] += 1
+                 if len(rejection_examples) < 30:
+@@ -701,7 +880,7 @@
+             "platform": "PREreview",
+             "source": "Zenodo community prereview-reviews",
+             "association_policy": "Only explicit Zenodo related_identifiers with relation=reviews; no DOI extraction from prose, references, titles, or arbitrary links.",
+-            "sample_policy": "Deterministic SHA-256 ordering over all strict version-family groups after a complete community scan.",
++            "sample_policy": "Include all families with explicitly linked author responses, then all strict multi-version families, then deterministically fill remaining rows by SHA-256 ordering after a complete community scan.",
+             "seed": self.seed,
+             "requested": limit,
+             "written": len(papers),
+@@ -750,6 +929,13 @@
+     return family_and_version(normalized, "doi")[0]
+ 
+ 
++def contains_real_html(value: str) -> bool:
++    # Do not flag mathematical comparisons such as pLDDT < 50 or quoted text
++    # spanning angle brackets. Only recognized HTML elements count.
++    soup = BeautifulSoup(value or "", "html.parser")
++    return any((tag.name or "").lower() in KNOWN_HTML_TAGS for tag in soup.find_all())
++
++
+ def validate_csv(path: Path, expected: int) -> list[str]:
+     with path.open(encoding="utf-8-sig", newline="") as file:
+         reader = csv.DictReader(file)
+@@ -766,7 +952,7 @@
+         for required in ("PaperTitle", "Authors", "Source", "Venue", "Year", "PeerReview"):
+             if not str(row.get(required) or "").strip():
+                 issues.append(f"row {row_number}: missing {required}")
+-        if re.search(r"<[^>]+>", row.get("PaperTitle") or ""):
++        if contains_real_html(row.get("PaperTitle") or ""):
+             issues.append(f"row {row_number}: HTML remains in title")
+         doi_value = row.get("DOI") or ""
+         if doi_value:
+@@ -808,6 +994,12 @@
+                 continue
+             if not isinstance(responses, list):
+                 issues.append(f"row {row_number}: Response is not list")
++                responses = []
++            for response in responses:
++                if not isinstance(response, dict) or not str(response.get("To_Reviewer_ID") or "").strip() or not str(response.get("Response") or "").strip():
++                    issues.append(f"row {row_number}: invalid response")
++                elif contains_real_html(str(response.get("Response") or "")):
++                    issues.append(f"row {row_number}: HTML remains in response")
+             for comment in comments:
+                 review_id = str(comment.get("Reviewer_ID") or "") if isinstance(comment, dict) else ""
+                 body = str(comment.get("Comment") or "") if isinstance(comment, dict) else ""
+@@ -818,7 +1010,7 @@
+                 review_ids.add(review_id)
+                 if any(phrase in body.lower() for phrase in PRESERVATION_PHRASES):
+                     issues.append(f"row {row_number}: preservation boilerplate remains")
+-                if re.search(r"<[^>]+>", body):
++                if contains_real_html(body):
+                     issues.append(f"row {row_number}: HTML remains in comment")
+     return issues
+ 
