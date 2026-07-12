@@ -127,6 +127,12 @@ set_cn_font()
 
 This project is a static research presentation page.
 
-* `index.html` contains the layout, styling, data arrays, and client-side rendering logic.
+* `index.html` is the total-dataset static entry point and loads the shared CSS and JavaScript files.
+* `ai.html`, `biomedicine.html`, and `physics.html` are dataset-specific static entry points that reuse the same scripts with different `body[data-dataset]` values.
+* `site.js` renders dataset intros, report-derived chapter guide cards, local dataset profile stats, all 83 figures, and the citation Top10 model comparison table.
+* `visual-descriptions.js` replaces generic figure captions with dataset-specific visual interpretations.
+* `visual-overrides.css` contains the presentation refinements for captions, dataset profile cards, chapter guide cards, and model result tables.
 * `assets/figures/` contains the local figure assets referenced by relative paths.
+* `assets/datasets/` contains the current four-page figure sets for `overall`, `ai`, `biomedicine`, and `physics`, with 83 PNG files per dataset.
 * Keep the page usable by opening `index.html` directly; use a temporary local HTTP server only for browser validation when needed.
+* Current report narrative content is based on `中信所-报告v1.docx` from the local analysis workspace, with model metrics taken from `output/streamlit_model_artifacts_by_dataset` in that workspace.
