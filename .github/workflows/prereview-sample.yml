@@ -27,17 +27,19 @@ jobs:
         id: collect
         shell: bash
         run: |
+          mkdir -p data/prereview
           set +e
           python scripts/prereview_crawler.py \
             --limit 200 \
             --max-pages 100 \
             --output data/prereview/prereview_final_200_corrected.csv \
             --stats data/prereview/prereview_collection_stats_corrected.json \
-            --audit data/prereview/prereview_audit_200.json
-          code=$?
+            --audit data/prereview/prereview_audit_200.json \
+            2>&1 | tee data/prereview/run.log
+          code=${PIPESTATUS[0]}
           echo "code=$code" >> "$GITHUB_OUTPUT"
           exit 0
-      - name: Upload sample, audit, and statistics
+      - name: Upload sample, audit, statistics, and log
         if: always()
         uses: actions/upload-artifact@v4
         with:
