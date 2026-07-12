@@ -1,0 +1,49 @@
+name: Build PREreview 200-row sample
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+    paths:
+      - "scripts/prereview_crawler.py"
+      - ".github/workflows/prereview-sample.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check requests beautifulsoup4
+      - name: Collect and validate sample
+        id: collect
+        shell: bash
+        run: |
+          set +e
+          python scripts/prereview_crawler.py \
+            --limit 200 \
+            --max-pages 100 \
+            --output data/prereview/prereview_final_200.csv \
+            --stats data/prereview/prereview_collection_stats.json
+          code=$?
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Upload sample and statistics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: prereview-200-sample
+          path: data/prereview/
+          if-no-files-found: error
+          retention-days: 7
+      - name: Enforce validation result
+        if: steps.collect.outputs.code != '0'
+        run: exit ${{ steps.collect.outputs.code }}
